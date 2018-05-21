@@ -27,6 +27,8 @@
 #include "driver/d3d11/d3d11_context.h"
 #include "driver/d3d11/d3d11_resources.h"
 
+#include "af.h"
+
 bool WrappedID3D11Device::Serialise_CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
                                                  const D3D11_SUBRESOURCE_DATA *pInitialData,
                                                  ID3D11Buffer **ppBuffer)
@@ -427,7 +429,122 @@ bool WrappedID3D11Device::Serialise_CreateTexture2D(const D3D11_TEXTURE2D_DESC *
         ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX |
           D3D11_RESOURCE_MISC_GDI_COMPATIBLE | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
 
-    if(HasInitialData)
+	if (HasInitialData) {
+		{
+			bool isFind = false;
+			uint64_t ddwId = 0;
+			const vector<DDS_info> *vec = af_get_process_vector();
+			for (auto it = vec->begin(); it != vec->end(); it++) {
+				/*if (descs.size() > 2 && (int)descs[2].SysMemSlicePitch < it->len)
+				{
+					int diff = memcmp(descs[2].pSysMem, it->buff, descs[2].SysMemSlicePitch);
+					if (diff == 0) {
+						printf("xxxxxxxxxxxxxx: %llu <- %s\n", pTexture.val(), it->file.c_str());
+					}
+				}*/
+				/*	int iii = 0;
+				for (auto ii = descs.begin(); ii != descs.end(); ii++) {
+					if ((int)ii->SysMemSlicePitch < it->len) {
+						int diff = memcmp(ii->pSysMem, it->buff, ii->SysMemSlicePitch);
+						if (diff == 0) {
+							printf("xxxxxxxxxxxxxx: %d, %llu <- %s\n", iii, pTexture.val(), it->file.c_str());
+							break;
+						}
+					}
+					iii++;
+				}*/
+
+				// origin
+				/*if ((int)descs[0].SysMemSlicePitch > it->len)
+					continue;
+				int diff = memcmp(descs[0].pSysMem, it->buff, descs[0].SysMemSlicePitch);
+				if (diff == 0) {
+					ddwId = pTexture.val();
+					af_add_trace_resource_id(ddwId);
+					printf("Hit %llu by %s\n", ddwId, it->file.c_str());
+					break;
+				}*/
+
+				for (auto layer = it->layer_vec.begin(); layer != it->layer_vec.end(); layer++) {
+					if ((int)descs[0].SysMemSlicePitch > layer->second)
+						break;
+					if ((int)descs[0].SysMemSlicePitch != layer->second)
+						continue;
+					int diff = memcmp(descs[0].pSysMem, layer->first, descs[0].SysMemSlicePitch);
+					if (diff == 0) {
+						ddwId = pTexture.val();
+
+						af_add_trace_resource_id(ddwId);
+						printf("Hit %llu by %s\n", ddwId, it->file.c_str());
+						isFind = true;
+						break;
+					}
+				}
+				if (isFind)
+					break;
+			}
+		}
+		{
+			// const DDS_info *dst = NULL;
+			bool isFind = false;
+			const DDS_info *dst_dds = NULL;
+			int dst_vec_index = -1;
+			const vector<pair<DDS_info, DDS_info>> *vec = af_get_replace_vector();
+			for (auto it = vec->begin(); it != vec->end(); it++) {
+
+				// origin
+				/*if ((int)descs[0].SysMemSlicePitch > it->first.len)
+					continue;
+				int diff = memcmp(descs[0].pSysMem, it->first.buff, descs[0].SysMemSlicePitch);
+				if (diff == 0) {
+					dst = &it->second;
+					break;
+				}*/
+
+				auto tmp_src_vec = it->first.layer_vec;
+				// for (auto src_layer = it->first.layer_vec.begin(); src_layer != it->first.layer_vec.end(); src_layer++) {
+				for (int i = 0; i < tmp_src_vec.size(); i++) {
+					if ((int)descs[0].SysMemSlicePitch > tmp_src_vec[i].second)
+						break;
+					if ((int)descs[0].SysMemSlicePitch != tmp_src_vec[i].second)
+						continue;
+					int diff = memcmp(descs[0].pSysMem, tmp_src_vec[i].first, descs[0].SysMemSlicePitch);
+					if (diff == 0) {
+						dst_dds = &it->second;
+						dst_vec_index = i;
+						isFind = true;
+					}
+					break;
+				}
+				if (isFind)
+					break;
+
+			}
+			if (dst_dds && dst_vec_index != -1) {
+				printf("Replace Id %llu -> %s\n", pTexture.val(), dst_dds->file.c_str());
+				// char *cur = (char *)dst->buff;
+				// int left = dst->len;
+				auto tmp_dst_vec = dst_dds->layer_vec;
+				for (auto it = descs.begin(); it != descs.end(); it++) {
+					/*if ((int)it->SysMemSlicePitch > left)
+						break;*/
+					if (dst_vec_index >= tmp_dst_vec.size())
+						break;
+					if (tmp_dst_vec[dst_vec_index].second != (int)it->SysMemSlicePitch)
+						break;
+
+					memcpy(const_cast<void *>(it->pSysMem), tmp_dst_vec[dst_vec_index].first, it->SysMemSlicePitch);
+
+					dst_vec_index++;
+					/*cur += it->SysMemSlicePitch;
+					left -= it->SysMemSlicePitch;*/
+				}
+				//memcpy(const_cast<void *>(descs[0].pSysMem), dst->buff, descs[0].SysMemSlicePitch);
+			}
+		}
+	}
+
+	if(HasInitialData)
       hr = m_pDevice->CreateTexture2D(&Descriptor, &descs[0], &ret);
     else
       hr = m_pDevice->CreateTexture2D(&Descriptor, NULL, &ret);
@@ -455,48 +572,49 @@ HRESULT WrappedID3D11Device::CreateTexture2D(const D3D11_TEXTURE2D_DESC *pDesc,
                                              ID3D11Texture2D **ppTexture2D)
 {
   // validation, returns S_FALSE for valid params, or an error code
-  if(ppTexture2D == NULL)
-    return m_pDevice->CreateTexture2D(pDesc, pInitialData, NULL);
+	if (ppTexture2D == NULL) {
+		return m_pDevice->CreateTexture2D(pDesc, pInitialData, NULL);
+	}
 
-  ID3D11Texture2D *real = NULL;
-  ID3D11Texture2D *wrapped = NULL;
-  HRESULT ret = m_pDevice->CreateTexture2D(pDesc, pInitialData, &real);
+	ID3D11Texture2D *real = NULL;
+	ID3D11Texture2D *wrapped = NULL;
+	HRESULT ret = m_pDevice->CreateTexture2D(pDesc, pInitialData, &real);
 
-  if(SUCCEEDED(ret))
-  {
-    SCOPED_LOCK(m_D3DLock);
+	if(SUCCEEDED(ret))
+	{
+		SCOPED_LOCK(m_D3DLock);
 
-    wrapped = new WrappedID3D11Texture2D1(real, this);
+		wrapped = new WrappedID3D11Texture2D1(real, this);
 
-    if(m_State >= WRITING)
-    {
-      Chunk *chunk = NULL;
+		if(m_State >= WRITING)
+		{
+			Chunk *chunk = NULL;
 
-      {
-        SCOPED_SERIALISE_CONTEXT(CREATE_TEXTURE_2D);
-        Serialise_CreateTexture2D(pDesc, pInitialData, &wrapped);
+			{
+				SCOPED_SERIALISE_CONTEXT(CREATE_TEXTURE_2D);
+				Serialise_CreateTexture2D(pDesc, pInitialData, &wrapped);
 
-        chunk = scope.Get();
-      }
+				chunk = scope.Get();
+			}
 
-      D3D11ResourceRecord *record =
-          GetResourceManager()->GetResourceRecord(GetIDForResource(wrapped));
-      RDCASSERT(record);
+			D3D11ResourceRecord *record =
+				GetResourceManager()->GetResourceRecord(GetIDForResource(wrapped));
+			RDCASSERT(record);
 
-      record->AddChunk(chunk);
-      record->SetDataPtr(chunk->GetData());
-    }
-    else
-    {
-      WrappedID3D11Texture2D1 *w = (WrappedID3D11Texture2D1 *)wrapped;
+			record->AddChunk(chunk);
+			record->SetDataPtr(chunk->GetData());
+		}
+		else
+		{
+			WrappedID3D11Texture2D1 *w = (WrappedID3D11Texture2D1 *)wrapped;
 
-      GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
-    }
+			GetResourceManager()->AddLiveResource(w->GetResourceID(), wrapped);
+		}
 
-    *ppTexture2D = wrapped;
-  }
+		*ppTexture2D = wrapped;
+	}
 
-  return ret;
+	return ret;
 }
 
 bool WrappedID3D11Device::Serialise_CreateTexture3D(const D3D11_TEXTURE3D_DESC *pDesc,
